@@ -32,6 +32,14 @@ def _motor_list(data: dict[str, Any]) -> list[dict[str, Any]]:
     return (data.get("window") or {}).get("motors") or []
 
 
+def _ha_position(device_position: Any) -> int | None:
+    """Convert BleBox's closed percentage to Home Assistant's open percentage."""
+    try:
+        return 100 - int(device_position)
+    except (TypeError, ValueError):
+        return None
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -97,18 +105,14 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             return f"{self._name_prefix} {base}"
         return str(base)
 
-    # Your device scale:
-    # 0 = fully open, 100 = fully closed
+    # Home Assistant: 0 = fully closed, 100 = fully open.
     @property
     def current_cover_position(self) -> int | None:
         motor = self._motor()
         if not motor:
             return None
         pos = (motor.get("currentPos") or {}).get("position")
-        try:
-            return int(pos)
-        except (TypeError, ValueError):
-            return None
+        return _ha_position(pos)
 
     # Your observed mapping:
     # 0 closing (moving to 100)
@@ -131,7 +135,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         pos = self.current_cover_position
         if pos is None:
             return None
-        return pos >= 100
+        return pos <= 0
 
     def _full_travel_time_s(self, motor: dict[str, Any], direction: str) -> float:
         calib = motor.get("calibrationParameters") or {}
@@ -240,9 +244,10 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         return {
             "enabled": motor.get("enabled"),
             "motor_state": motor.get("state"),
-            "current_position": cur_i,
-            "desired_position": des_i,
-            "favorite_position": fav.get("position"),
+            "current_position": _ha_position(cur_i),
+            "device_position": cur_i,
+            "desired_position": _ha_position(des_i),
+            "favorite_position": _ha_position(fav.get("position")),
             "at_favorite": at_fav,
             "control_type": motor.get("controlType"),
             "icon_set": motor.get("iconSet"),
@@ -252,8 +257,8 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             # movement metadata (any movement)
             "moving": self._tracked_moving,
             "move_direction": self._move_direction,
-            "move_target_position": self._move_target,
-            "move_start_position": self._move_start_pos,
+            "move_target_position": _ha_position(self._move_target),
+            "move_start_position": _ha_position(self._move_start_pos),
             "move_elapsed_s": move_elapsed_s,
             "estimated_total_s": estimated_total_s,
             "estimated_remaining_s": estimated_remaining_s,
@@ -283,7 +288,8 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """
         Emulate set position by moving and stopping when target reached.
-        Position scale: 0=open, 100=closed
+        Position scale: 0=closed, 100=open.
+        Endpoints use native commands so the device can finish its travel.
         """
         target = kwargs.get("position")
         if target is None:
@@ -295,13 +301,18 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             return
         target = max(0, min(100, target))
 
-        # Special-case endpoints for better accuracy
+        # A reported endpoint may precede the physical end of travel.
+        # Do not stop the motor or skip the command based on cached position.
+        if target == 0:
+            await self.async_close_cover()
+            return
         if target == 100:
-            tol = 0
-        elif target == 0:
-            tol = 0
-        else:
-            tol = POSITION_TOLERANCE
+            await self.async_open_cover()
+            return
+
+        # Keep the polling loop in the native BleBox coordinate system.
+        target = 100 - target
+        tol = POSITION_TOLERANCE
 
         motor = self._motor()
         if not motor:

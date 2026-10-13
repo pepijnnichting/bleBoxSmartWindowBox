@@ -1,11 +1,13 @@
 {
   "domain": "blebox_smartwindowbox",
   "name": "BleBox smartWindowBox",
-  "version": "0.0.1",
-  "documentation": "https://github.com/Sjnaaf/bleBoxSmartWindowBox/blob/main/README.md",
-  "requirements": [],
-  "codeowners": ["@sjnaaf"],
+  "codeowners": [
+    "@sjnaaf"
+  ],
   "config_flow": true,
+  "documentation": "https://github.com/Sjnaaf/bleBoxSmartWindowBox/blob/main/README.md",
+  "integration_type": "device",
   "iot_class": "local_polling",
-  "integration_type": "device"
+  "requirements": [],
+  "version": "0.0.1"
 }

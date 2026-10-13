@@ -42,15 +42,17 @@ The smartWindowBox motor is exposed as a standard Home Assistant **cover entity*
 * `Open`
 * `Close`
 * `Stop`
-* `Set position (0=open, 100=closed)`
+* `Set position (0=closed, 100=open)`
 
-Since the official BleBox API does **not** support direct position setting, this integration emulates it by:
+For intermediate positions, the integration emulates position setting because the BleBox API does **not** support direct position setting:
 
 1. Sending open or close command
 2. Polling device state
 3. Stopping the motor once the target position is reached
 
-This method is precise and tuned for real-world motor timing.
+Fully closed (0%) and fully open (100%) use the native close/open commands. The device completes its calibrated travel without an early stop based on a reported percentage.
+
+All exposed position attributes use the Home Assistant scale (0% closed, 100% open). `device_position` retains the raw BleBox scale (0% open, 100% closed). Existing automations using numeric positions must invert their targets and comparisons (`100 - old_position`) when upgrading.
 
 ---
 
@@ -192,8 +194,8 @@ You can:
 Position scale:
 
 ```
-0   = Fully Open
-100 = Fully Closed
+0   = Fully Closed
+100 = Fully Open
 ```
 
 ---
@@ -304,6 +306,21 @@ This value has been tuned for reliable real-world accuracy.
 * Position control is emulated (not native in API)
 * Accuracy depends on motor calibration
 * Rapid repeated commands may slightly affect precision
+
+---
+
+# Development checks
+
+With Home Assistant installed in the active Python environment, run the cover
+regression tests from the repository root:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+These cover the Home Assistant position scale, intermediate movements, and native
+endpoint commands. They use simulated responses; physical travel still needs to
+be verified on a real device. The GitHub workflow also runs Hassfest validation.
 
 ---
 

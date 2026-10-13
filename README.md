@@ -54,6 +54,17 @@ Fully closed (0%) and fully open (100%) use the native close/open commands. The 
 
 All exposed position attributes use the Home Assistant scale (0% closed, 100% open). `device_position` retains the raw BleBox scale (0% open, 100% closed). Existing automations using numeric positions must invert their targets and comparisons (`100 - old_position`) when upgrading.
 
+A new cover command cancels any previous intermediate-position controller before
+sending the new command. Stop, favorite, next-step, and new position requests all
+take precedence over the old target. Cancelling an active position-control
+service or unloading the integration also cancels the controller and attempts
+to stop the motor.
+
+If position control loses contact with the device or exceeds its travel timeout,
+it attempts a stop and reports an error. A stop cannot be guaranteed while the
+device is unreachable; the original error is preserved if the stop attempt also
+fails.
+
 ---
 
 ### Movement Metadata
@@ -72,6 +83,10 @@ While the window is moving (open, close, favorite, or manual movement), the foll
 | `move_progress_pct`     | Movement progress (0–100%)     |
 
 These update live during movement.
+
+When the motor changes direction or target, progress starts from the newly
+observed position and the elapsed time and direction-specific travel estimate
+are reset.
 
 Device state is refreshed every second while a motor is moving and every five
 seconds while idle. Commands trigger an immediate refresh. Intermediate-position

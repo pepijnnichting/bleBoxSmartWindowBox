@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
 
@@ -9,10 +10,12 @@ import voluptuous as vol
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.update_coordinator import CoordinatorEntity, UpdateFailed
 
+from .api import BleBoxApiError
 from .const import (
     DOMAIN,
     CONF_NAME,
@@ -26,6 +29,8 @@ from .const import (
     EXTRA_STOP_DELAY_SEC,
 )
 from .coordinator import BleBoxCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _motor_list(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -90,6 +95,8 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         self._move_target: int | None = None
         self._move_direction: str | None = None  # "opening" / "closing"
         self._move_full_time_s: float | None = None
+        self._command_lock = asyncio.Lock()
+        self._position_task: asyncio.Task[None] | None = None
 
     def _motor(self) -> dict[str, Any] | None:
         for m in _motor_list(self.coordinator.data):
@@ -169,19 +176,19 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             direction = "opening" if state == 1 else "closing"
             target = des_i
 
-            if not self._tracked_moving:
+            if (
+                not self._tracked_moving
+                or direction != self._move_direction
+                or target != self._move_target
+            ):
                 self._tracked_moving = True
                 self._move_started = time.monotonic()
                 self._move_start_pos = cur_i
                 self._move_direction = direction
                 self._move_target = target
                 self._move_full_time_s = self._full_travel_time_s(motor, direction)
-            else:
-                # update target/direction if changed mid-move
-                self._move_direction = direction
-                self._move_target = target
-                if self._move_full_time_s is None:
-                    self._move_full_time_s = self._full_travel_time_s(motor, direction)
+            elif self._move_full_time_s is None:
+                self._move_full_time_s = self._full_travel_time_s(motor, direction)
 
         else:
             if self._tracked_moving:
@@ -265,44 +272,67 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             "move_progress_pct": move_progress_pct,
         }
 
+    async def _async_cancel_position_task(self, *, stop: bool = False) -> bool:
+        """Cancel the previous controller while holding the command lock."""
+        task = self._position_task
+        self._position_task = None
+        if task is None or task.done():
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if stop:
+            await self._async_best_effort_stop()
+        return True
+
+    async def _async_best_effort_stop(self) -> None:
+        """Try stopping once, keeping the original error if the device is offline."""
+        try:
+            await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
+        except BleBoxApiError:
+            _LOGGER.warning("Could not stop BleBox motor %s", self._channel, exc_info=True)
+
+    async def _async_command(self, command: str) -> None:
+        """Replace any position controller before sending a new command."""
+        async with self._command_lock:
+            replaced = await self._async_cancel_position_task()
+            try:
+                await self.coordinator.api.send_motor_command(self._channel, command)
+            except BleBoxApiError as err:
+                self.coordinator.async_set_update_error(UpdateFailed(str(err)))
+                if replaced:
+                    await self._async_best_effort_stop()
+                raise HomeAssistantError(f"BleBox command failed: {err}") from err
+            await self.coordinator.async_refresh()
+
     async def async_open_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.api.send_motor_command(self._channel, CMD_UP)
-        await self.coordinator.async_refresh()
+        await self._async_command(CMD_UP)
 
     async def async_close_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.api.send_motor_command(self._channel, CMD_DOWN)
-        await self.coordinator.async_refresh()
+        await self._async_command(CMD_DOWN)
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-        await self.coordinator.async_refresh()
+        await self._async_command(CMD_STOP)
 
     async def async_favorite(self) -> None:
-        await self.coordinator.api.send_motor_command(self._channel, CMD_FAV)
-        await self.coordinator.async_refresh()
+        await self._async_command(CMD_FAV)
 
     async def async_next_step(self) -> None:
-        await self.coordinator.api.send_motor_command(self._channel, CMD_NEXT)
-        await self.coordinator.async_refresh()
+        await self._async_command(CMD_NEXT)
+
+    async def async_will_remove_from_hass(self) -> None:
+        async with self._command_lock:
+            await self._async_cancel_position_task(stop=True)
+        await super().async_will_remove_from_hass()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
-        """
-        Emulate set position by moving and stopping when target reached.
-        Position scale: 0=closed, 100=open.
-        Endpoints use native commands so the device can finish its travel.
-        """
-        target = kwargs.get("position")
-        if target is None:
-            return
-
+        """Use native endpoints and an interruptible controller in between."""
         try:
-            target = int(target)
+            target = int(kwargs.get("position"))
         except (TypeError, ValueError):
             return
         target = max(0, min(100, target))
 
-        # A reported endpoint may precede the physical end of travel.
-        # Do not stop the motor or skip the command based on cached position.
+        # Let the device finish calibrated endpoint travel without early stops.
         if target == 0:
             await self.async_close_cover()
             return
@@ -310,69 +340,94 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             await self.async_open_cover()
             return
 
-        # Keep the polling loop in the native BleBox coordinate system.
         target = 100 - target
-        tol = POSITION_TOLERANCE
+        async with self._command_lock:
+            replaced = await self._async_cancel_position_task()
+            motor = self._motor()
+            if not motor:
+                return
+            try:
+                cur_i = int((motor.get("currentPos") or {}).get("position"))
+            except (TypeError, ValueError):
+                cur_i = None
 
-        motor = self._motor()
-        if not motor:
-            return
-
-        cur = (motor.get("currentPos") or {}).get("position")
-        try:
-            cur_i = int(cur)
-        except (TypeError, ValueError):
-            cur_i = None
-
-        if cur_i is not None and abs(cur_i - target) <= POSITION_TOLERANCE:
-            return
-
-        direction = "opening" if (cur_i is None or target < cur_i) else "closing"
-        command = CMD_UP if direction == "opening" else CMD_DOWN
-
-        # Timeout based on calibration full travel time + buffer
-        full_time_s = self._full_travel_time_s(motor, direction)
-        timeout_s = max(5.0, full_time_s + 5.0)
-
-        await self.coordinator.api.send_motor_command(self._channel, command)
-        await self.coordinator.async_refresh()
-
-        start = time.monotonic()
-        while True:
-            if time.monotonic() - start > timeout_s:
-                await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-                await self.coordinator.async_refresh()
+            if cur_i is not None and abs(cur_i - target) <= POSITION_TOLERANCE:
+                if replaced or motor.get("state") in (0, 1):
+                    await self._async_command_stop_at_target()
                 return
 
-            await asyncio.sleep(POLL_INTERVAL_SEC)
+            direction = "opening" if cur_i is None or target < cur_i else "closing"
+            timeout_s = max(5.0, self._full_travel_time_s(motor, direction) + 5.0)
+            task = asyncio.create_task(
+                self._async_move_to_position(target, direction, timeout_s)
+            )
+            self._position_task = task
 
-            # Poll direct for freshest position
-            data = await self.coordinator.api.window_extended_state()
-            self.coordinator.async_set_updated_data(data)
-            motors = (data.get("window") or {}).get("motors") or []
-            m = next((mm for mm in motors if int(mm.get("id", -1)) == self._channel), None)
-            if not m:
-                continue
+        try:
+            # Caller cancellation is handled under the command lock below.
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                async with self._command_lock:
+                    if self._position_task is task:
+                        await self._async_cancel_position_task(stop=True)
+                raise
+            # A newer command superseded this controller successfully.
 
-            pos = (m.get("currentPos") or {}).get("position")
-            try:
-                pos_i = int(pos)
-            except (TypeError, ValueError):
-                continue
+    async def _async_command_stop_at_target(self) -> None:
+        try:
+            await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
+        except BleBoxApiError as err:
+            self.coordinator.async_set_update_error(UpdateFailed(str(err)))
+            raise HomeAssistantError(f"BleBox stop failed: {err}") from err
+        await self.coordinator.async_refresh()
 
-            if direction == "opening":
-                # moving downward (toward 0): stop once we've reached/passed target
-                if pos_i <= target + tol:
+    async def _async_move_to_position(
+        self, target: int, direction: str, timeout_s: float
+    ) -> None:
+        """Publish readings and stop at the target until replaced or cancelled."""
+        try:
+            # Include transport and refresh time in the movement deadline.
+            start = time.monotonic()
+            command = CMD_UP if direction == "opening" else CMD_DOWN
+            await self.coordinator.api.send_motor_command(self._channel, command)
+            await self.coordinator.async_refresh()
+
+            while True:
+                if time.monotonic() - start > timeout_s:
+                    raise HomeAssistantError("BleBox position movement timed out")
+                await asyncio.sleep(POLL_INTERVAL_SEC)
+                data = await self.coordinator.api.window_extended_state()
+                self.coordinator.async_set_updated_data(data)
+                motor = next(
+                    (m for m in _motor_list(data) if int(m.get("id", -1)) == self._channel),
+                    None,
+                )
+                if not motor:
+                    continue
+                try:
+                    position = int((motor.get("currentPos") or {}).get("position"))
+                except (TypeError, ValueError):
+                    continue
+
+                reached = (
+                    position <= target + POSITION_TOLERANCE
+                    if direction == "opening"
+                    else position >= target - POSITION_TOLERANCE
+                )
+                if reached:
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
                     await asyncio.sleep(EXTRA_STOP_DELAY_SEC)
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
                     await self.coordinator.async_refresh()
                     return
-            else:
-                # closing upward (toward 100): stop once we've reached/passed target
-                if pos_i >= target - tol:
-                    await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-                    await asyncio.sleep(EXTRA_STOP_DELAY_SEC)
-                    await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-                    await self.coordinator.async_refresh()
-                    return
+        except (BleBoxApiError, HomeAssistantError) as err:
+            async with self._command_lock:
+                if self._position_task is asyncio.current_task():
+                    if isinstance(err, BleBoxApiError):
+                        self.coordinator.async_set_update_error(UpdateFailed(str(err)))
+                    await self._async_best_effort_stop()
+            raise HomeAssistantError(f"BleBox position control failed: {err}") from err
+        finally:
+            if self._position_task is asyncio.current_task():
+                self._position_task = None

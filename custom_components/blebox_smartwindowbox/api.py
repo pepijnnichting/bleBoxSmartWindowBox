@@ -40,8 +40,11 @@ class BleBoxSmartWindowBoxApi:
                 async with self._session.get(url, timeout=self._timeout) as resp:
                     if resp.status != 200:
                         raise BleBoxApiError(f"GET {path} failed: HTTP {resp.status}")
-                    return await resp.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    data = await resp.json(content_type=None)
+                    if not isinstance(data, dict):
+                        raise BleBoxApiError(f"GET {path} failed: expected a JSON object")
+                    return data
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             raise BleBoxApiError(f"GET {path} failed: {e}") from e
 
     async def device_state(self) -> DeviceInfo:

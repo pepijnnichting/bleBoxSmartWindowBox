@@ -73,6 +73,18 @@ While the window is moving (open, close, favorite, or manual movement), the foll
 
 These update live during movement.
 
+Device state is refreshed every second while a motor is moving and every five
+seconds while idle. Commands trigger an immediate refresh. Intermediate-position
+control also publishes each direct device reading to Home Assistant.
+
+### Apple Home / HomeKit Bridge
+
+Use Home Assistant 2026.10 or newer when exposing the cover through HomeKit
+Bridge. In 2026.9.3 the bridge can retain an old target position during movement
+started outside Apple Home, causing iOS to display the opposite direction even
+when Home Assistant reports the correct direction. The bridge correction is in
+Home Assistant; updating this custom integration alone does not fix that issue.
+
 ---
 
 ### Rain Sensor

@@ -7,6 +7,7 @@ DEFAULT_NAME = "BleBox smartWindowBox"
 PLATFORMS = ["cover", "binary_sensor"]
 
 UPDATE_INTERVAL_SECONDS = 5
+MOVING_UPDATE_INTERVAL_SECONDS = 1
 
 # Motor commands
 CMD_UP = "u"       # moves toward position 0 (open) on your device

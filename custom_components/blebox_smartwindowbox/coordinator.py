@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import BleBoxSmartWindowBoxApi, BleBoxApiError
-from .const import DOMAIN, UPDATE_INTERVAL_SECONDS
+from .const import DOMAIN, MOVING_UPDATE_INTERVAL_SECONDS, UPDATE_INTERVAL_SECONDS
 
 
 class BleBoxCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -22,6 +22,13 @@ class BleBoxCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            return await self.api.window_extended_state()
+            data = await self.api.window_extended_state()
         except BleBoxApiError as e:
             raise UpdateFailed(str(e)) from e
+
+        motors = (data.get("window") or {}).get("motors") or []
+        moving = any(motor.get("state") in (0, 1) for motor in motors)
+        self.update_interval = timedelta(
+            seconds=MOVING_UPDATE_INTERVAL_SECONDS if moving else UPDATE_INTERVAL_SECONDS
+        )
+        return data

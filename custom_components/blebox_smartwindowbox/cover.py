@@ -267,23 +267,23 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
 
     async def async_open_cover(self, **kwargs: Any) -> None:
         await self.coordinator.api.send_motor_command(self._channel, CMD_UP)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_refresh()
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         await self.coordinator.api.send_motor_command(self._channel, CMD_DOWN)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_refresh()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_refresh()
 
     async def async_favorite(self) -> None:
         await self.coordinator.api.send_motor_command(self._channel, CMD_FAV)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_refresh()
 
     async def async_next_step(self) -> None:
         await self.coordinator.api.send_motor_command(self._channel, CMD_NEXT)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_refresh()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """
@@ -335,18 +335,20 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         timeout_s = max(5.0, full_time_s + 5.0)
 
         await self.coordinator.api.send_motor_command(self._channel, command)
+        await self.coordinator.async_refresh()
 
         start = time.monotonic()
         while True:
             if time.monotonic() - start > timeout_s:
                 await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-                await self.coordinator.async_request_refresh()
+                await self.coordinator.async_refresh()
                 return
 
             await asyncio.sleep(POLL_INTERVAL_SEC)
 
             # Poll direct for freshest position
             data = await self.coordinator.api.window_extended_state()
+            self.coordinator.async_set_updated_data(data)
             motors = (data.get("window") or {}).get("motors") or []
             m = next((mm for mm in motors if int(mm.get("id", -1)) == self._channel), None)
             if not m:
@@ -364,7 +366,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
                     await asyncio.sleep(EXTRA_STOP_DELAY_SEC)
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-                    await self.coordinator.async_request_refresh()
+                    await self.coordinator.async_refresh()
                     return
             else:
                 # closing upward (toward 100): stop once we've reached/passed target
@@ -372,5 +374,5 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
                     await asyncio.sleep(EXTRA_STOP_DELAY_SEC)
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
-                    await self.coordinator.async_request_refresh()
+                    await self.coordinator.async_refresh()
                     return

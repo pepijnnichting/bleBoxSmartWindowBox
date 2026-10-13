@@ -5,7 +5,7 @@ Requires Home Assistant in the active Python environment.
 """
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.blebox_smartwindowbox.cover import BleBoxMotorCover
 
@@ -24,6 +24,8 @@ class CoverTests(unittest.IsolatedAsyncioTestCase):
         self.coordinator = SimpleNamespace(
             data=self.data, api=self.api, config_entry=None,
             async_request_refresh=AsyncMock(),
+            async_refresh=AsyncMock(),
+            async_set_updated_data=Mock(),
         )
         self.cover = BleBoxMotorCover(self.coordinator, 'entry', 0, None)
 
@@ -87,3 +89,40 @@ class CoverTests(unittest.IsolatedAsyncioTestCase):
         for target in (None, 'invalid'):
             await self.cover.async_set_cover_position(position=target)
         self.api.send_motor_command.assert_not_awaited()
+
+    async def test_commands_refresh_state_immediately(self):
+        for method in (
+            self.cover.async_open_cover, self.cover.async_close_cover,
+            self.cover.async_stop_cover, self.cover.async_favorite,
+            self.cover.async_next_step,
+        ):
+            with self.subTest(method=method.__name__):
+                self.coordinator.async_refresh.reset_mock()
+                await method()
+                self.coordinator.async_refresh.assert_awaited_once()
+        self.coordinator.async_request_refresh.assert_not_awaited()
+
+    async def test_intermediate_motion_publishes_each_position(self):
+        opening = {'window': {'motors': [
+            {'id': 0, 'state': 1, 'currentPos': {'position': 35}}
+        ]}}
+        reached = {'window': {'motors': [
+            {'id': 0, 'state': 1, 'currentPos': {'position': 30}}
+        ]}}
+        self.api.window_extended_state.side_effect = [opening, reached]
+        with patch('custom_components.blebox_smartwindowbox.cover.asyncio.sleep', new=AsyncMock()):
+            await self.cover.async_set_cover_position(position=70)
+        self.assertEqual(
+            [call.args[0] for call in self.coordinator.async_set_updated_data.call_args_list],
+            [opening, reached],
+        )
+        self.assertEqual(self.coordinator.async_refresh.await_count, 2)
+
+    def test_movement_state_and_position_agree(self):
+        for state, raw, opening, closing in [(1, 30, True, False), (0, 70, False, True), (2, 50, False, False)]:
+            with self.subTest(state=state):
+                self.motor['state'] = state
+                self.motor['currentPos']['position'] = raw
+                self.assertEqual(self.cover.is_opening, opening)
+                self.assertEqual(self.cover.is_closing, closing)
+                self.assertEqual(self.cover.current_cover_position, 100 - raw)

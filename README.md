@@ -1,24 +1,6 @@
-## Installation (HACS)
-
-1. Open **HACS** in Home Assistant.
-2. Go to **Integrations**.
-3. Click the **⋮** (top right) → **Custom repositories**.
-4. Add this repository URL:
-
-   `https://github.com/Sjnaaf/bleBoxSmartWindowBox`
-
-5. Choose **Category: Integration**.
-6. Click **Add**.
-7. Search for **BleBox smartWindowBox** in HACS and install it.
-8. Restart Home Assistant.
-9. Add the integration via: **Settings → Devices & Services → Add integration**.
-
----
----
-
 # BleBox smartWindowBox – Home Assistant Integration
 
-A fully featured **custom Home Assistant integration** for the **BleBox smartWindowBox** ([API level 20180604](https://technical.blebox.eu/openAPI_smartWindowBox/openAPI_smartWindowBox_20180604.html)).
+A **custom Home Assistant integration** for the **BleBox smartWindowBox** ([API level 20180604](https://technical.blebox.eu/openAPI_smartWindowBox/openAPI_smartWindowBox_20180604.html)).
 
 This integration provides:
 
@@ -30,6 +12,25 @@ This integration provides:
 * ✅ Real-time movement metadata
 * ✅ Progress %, remaining time & direction tracking
 * ✅ Proper Home Assistant entity services with UI selectors
+
+This fork includes position-scale fixes, native endpoint movement, faster status
+updates, interruptible position control, and improved error handling. The original
+project is [Sjnaaf/bleBoxSmartWindowBox](https://github.com/Sjnaaf/bleBoxSmartWindowBox).
+
+## Installation (HACS)
+
+1. Open **HACS** in Home Assistant.
+2. Go to **Integrations**.
+3. Click the **⋮** (top right) → **Custom repositories**.
+4. Add this repository URL:
+
+   `https://github.com/pepijnnichting/bleBoxSmartWindowBox`
+
+5. Choose **Category: Integration**.
+6. Click **Add**.
+7. Search for **BleBox smartWindowBox** in HACS and install it.
+8. Restart Home Assistant.
+9. Add the integration via: **Settings → Devices & Services → Add integration**.
 
 ---
 
@@ -149,13 +150,13 @@ The integration registers proper entity services with UI selectors:
 | `blebox_smartwindowbox.next_step`    | Perform next-step movement           |
 | `blebox_smartwindowbox.set_position` | Move to specific position (0–100)    |
 
-These appear in **Developer Tools → Services**.
+These appear in **Developer Tools → Actions**.
 
 ---
 
 # Installation
 
-## Method 1 — Manual Installation (Recommended)
+## Manual Installation
 
 1. Download or clone this repository.
 2. Copy the folder:
@@ -179,6 +180,8 @@ config/
         ├── __init__.py
         ├── api.py
         ├── binary_sensor.py
+        ├── brand/
+        │   └── icon.png
         ├── config_flow.py
         ├── const.py
         ├── coordinator.py
@@ -193,6 +196,17 @@ config/
 3. Restart Home Assistant:
 
    * **Settings → System → Restart**
+
+## Updating
+
+Download the latest integration files through HACS, or replace the complete
+`custom_components/blebox_smartwindowbox/` folder for a manual installation. Restart
+Home Assistant afterward. Existing integration entries can remain configured.
+
+If upgrading from the original position scale, review automations and scripts
+with numeric position targets: Home Assistant now uses **0% closed, 100% open**.
+Invert old values with `100 - old_position`. Native open, close, stop, and favorite
+actions keep their meaning.
 
 ---
 
@@ -249,7 +263,7 @@ Position scale:
 Go to:
 
 ```
-Developer Tools → Services
+Developer Tools → Actions
 ```
 
 Select:
@@ -282,7 +296,7 @@ The integration will:
 
 * Move in correct direction
 * Track progress
-* Stop exactly at the target
+* Stop when the reported position reaches the target within the configured tolerance
 
 ---
 
@@ -306,22 +320,28 @@ These update live while the window moves.
 
 # Tuning & Advanced Settings
 
-Movement precision is controlled by:
+The defaults are defined in `custom_components/blebox_smartwindowbox/const.py`:
 
 ```python
 POSITION_TOLERANCE = 1
-POLL_INTERVAL_SEC = 0.20
+POLL_INTERVAL_SEC = 0.35
+EXTRA_STOP_DELAY_SEC = 0.15
+MOVING_UPDATE_INTERVAL_SECONDS = 1
+UPDATE_INTERVAL_SECONDS = 5
 ```
 
-Lower polling interval increases precision but increases API traffic.
+Intermediate-position control polls every 0.35 seconds and uses a tolerance of
+one percentage point. After reaching the target, a second stop is sent after
+0.15 seconds to reduce coasting. A newer command cancels the old controller,
+including a pending second stop.
 
-Default polling interval while moving:
+Regular status polling runs every second during movement and every five seconds
+while idle. Fully open and fully closed requests use native commands and do not
+use the intermediate-position stop loop.
 
-```python
-POLL_INTERVAL_SEC = 0.20
-```
-
-This value has been tuned for reliable real-world accuracy.
+These are source-code constants, not options in the integration UI. Lower polling
+intervals increase API traffic. Physical accuracy depends on calibration, response
+time, and motor coasting.
 
 ---
 
@@ -341,13 +361,15 @@ This value has been tuned for reliable real-world accuracy.
 
 * BleBox smartWindowBox
 * API level 20180604
-* Single motor configuration (current version)
+* Validated with a single-motor configuration
+* Development checks passed on Home Assistant 2026.9.3 and 2026.10.1
+* Home Assistant 2026.10 or newer recommended for HomeKit Bridge
 
 ---
 
 # Known Limitations
 
-* Position control is emulated (not native in API)
+* Intermediate-position control is emulated; endpoint movement uses native commands
 * Accuracy depends on motor calibration
 * Rapid repeated commands may slightly affect precision
 
@@ -355,22 +377,24 @@ This value has been tuned for reliable real-world accuracy.
 
 # Development checks
 
-With Home Assistant installed in the active Python environment, run the cover
+With Home Assistant installed in the active Python environment, run the
 regression tests from the repository root:
 
 ```sh
 python -m unittest discover -s tests -v
 ```
 
-These cover the Home Assistant position scale, intermediate movements, and native
-endpoint commands. They use simulated responses; physical travel still needs to
-be verified on a real device. The GitHub workflow also runs Hassfest validation.
+These cover position conversion, native endpoints, intermediate movements,
+command replacement and cancellation, network errors, timeouts, polling intervals,
+and progress resets after a direction or target change. API tests use a local HTTP
+server; other device responses are simulated. Physical travel still needs to be
+verified on a real device. The GitHub workflow runs Hassfest validation; the Python
+regression tests currently run separately.
 
 ---
 
 # Future Improvements (Ideas)
 
-* HACS support
 * Multi-motor support
 * Dedicated progress sensor entity
 * Configurable precision via UI

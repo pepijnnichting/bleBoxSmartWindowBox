@@ -7,7 +7,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components.cover import CoverEntity, CoverEntityFeature
+from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -73,9 +73,11 @@ async def async_setup_entry(
 
 class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
     _attr_has_entity_name = True
+    _attr_device_class = CoverDeviceClass.WINDOW
 
     def __init__(self, coordinator: BleBoxCoordinator, entry_id: str, channel: int, name_prefix: str | None) -> None:
         super().__init__(coordinator)
+        self._attr_device_info = coordinator.device_info
         self._entry_id = entry_id
         self._channel = channel
         self._name_prefix = name_prefix

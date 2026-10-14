@@ -9,6 +9,7 @@ This integration provides:
 * ✅ Favorite position support
 * ✅ Next step support
 * ✅ Rain sensor as binary sensor
+* ✅ Cover and rain sensor grouped under one BleBox device
 * ✅ Real-time movement metadata
 * ✅ Progress %, remaining time & direction tracking
 * ✅ Proper Home Assistant entity services with UI selectors
@@ -35,6 +36,17 @@ project is [Sjnaaf/bleBoxSmartWindowBox](https://github.com/Sjnaaf/bleBoxSmartWi
 ---
 
 ## Features
+
+### Device information
+
+The cover and rain sensor belong to one BleBox device in **Settings → Devices &
+Services**. Its identity is based on the device ID returned by the BleBox API.
+The device page shows the manufacturer, model, available hardware and firmware
+versions, and a link to the device's local web interface. The cover uses Home
+Assistant's `window` device class.
+
+Existing entity unique IDs are preserved, so the update does not require recreating
+automations or removing the configured integration.
 
 ### Cover Entity
 
@@ -388,8 +400,18 @@ These cover position conversion, native endpoints, intermediate movements,
 command replacement and cancellation, network errors, timeouts, polling intervals,
 and progress resets after a direction or target change. API tests use a local HTTP
 server; other device responses are simulated. Physical travel still needs to be
-verified on a real device. The GitHub workflow runs Hassfest validation; the Python
-regression tests currently run separately.
+verified on a real device. GitHub Actions runs these tests on Home Assistant
+2026.9.3 and 2026.10.1 with Python 3.14 for pushes and pull requests, alongside
+Hassfest validation. The suite also checks actual Home Assistant device/entity
+registration and identity preservation after reloading the integration.
+
+## Version 0.1.0
+
+This version includes the corrected Home Assistant position scale, native endpoint
+commands, faster status updates, interruptible position control, improved error
+handling, movement-progress resets, shared device metadata, and the `window`
+device class. Upgrade instructions and the position-scale migration are described
+above.
 
 ---
 

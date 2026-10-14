@@ -27,7 +27,7 @@ class CoverTests(unittest.IsolatedAsyncioTestCase):
             window_extended_state=AsyncMock(return_value=self.data),
         )
         self.coordinator = SimpleNamespace(
-            data=self.data, api=self.api, config_entry=None,
+            data=self.data, api=self.api, config_entry=None, device_info=None,
             async_request_refresh=AsyncMock(),
             async_refresh=AsyncMock(),
             async_set_updated_data=Mock(),

@@ -38,6 +38,7 @@ class BleBoxRainBinarySensor(CoordinatorEntity[BleBoxCoordinator], BinarySensorE
 
     def __init__(self, coordinator: BleBoxCoordinator, entry_id: str, sensor_id: int) -> None:
         super().__init__(coordinator)
+        self._attr_device_info = coordinator.device_info
         self._entry_id = entry_id
         self._sensor_id = sensor_id
         self._attr_unique_id = f"{entry_id}_rain_{sensor_id}"

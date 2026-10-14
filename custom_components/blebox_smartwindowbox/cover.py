@@ -278,6 +278,10 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         self._position_task = None
         if task is None or task.done():
             return False
+        _LOGGER.debug(
+            "Motor %s: cancelling previous position controller (stop=%s)",
+            self._channel, stop,
+        )
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         if stop:
@@ -286,6 +290,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
 
     async def _async_best_effort_stop(self) -> None:
         """Try stopping once, keeping the original error if the device is offline."""
+        _LOGGER.debug("Motor %s: recovery/cancellation stop", self._channel)
         try:
             await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
         except BleBoxApiError:
@@ -295,6 +300,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         """Replace any position controller before sending a new command."""
         async with self._command_lock:
             replaced = await self._async_cancel_position_task()
+            _LOGGER.debug("Motor %s: native command %s", self._channel, command)
             try:
                 await self.coordinator.api.send_motor_command(self._channel, command)
             except BleBoxApiError as err:
@@ -320,6 +326,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         await self._async_command(CMD_NEXT)
 
     async def async_will_remove_from_hass(self) -> None:
+        _LOGGER.debug("Motor %s: removing entity", self._channel)
         async with self._command_lock:
             await self._async_cancel_position_task(stop=True)
         await super().async_will_remove_from_hass()
@@ -331,6 +338,11 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
         except (TypeError, ValueError):
             return
         target = max(0, min(100, target))
+        _LOGGER.debug(
+            "Motor %s: requested HA position %s (current=%s, motor_state=%s)",
+            self._channel, target, self.current_cover_position,
+            (self._motor() or {}).get("state"),
+        )
 
         # Let the device finish calibrated endpoint travel without early stops.
         if target == 0:
@@ -368,6 +380,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             await asyncio.shield(task)
         except asyncio.CancelledError:
             if asyncio.current_task().cancelling():
+                _LOGGER.debug("Motor %s: position service cancelled", self._channel)
                 async with self._command_lock:
                     if self._position_task is task:
                         await self._async_cancel_position_task(stop=True)
@@ -375,6 +388,7 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             # A newer command superseded this controller successfully.
 
     async def _async_command_stop_at_target(self) -> None:
+        _LOGGER.debug("Motor %s: already at requested position; stopping", self._channel)
         try:
             await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
         except BleBoxApiError as err:
@@ -390,6 +404,10 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
             # Include transport and refresh time in the movement deadline.
             start = time.monotonic()
             command = CMD_UP if direction == "opening" else CMD_DOWN
+            _LOGGER.debug(
+                "Motor %s: position controller %s to HA position %s (timeout=%ss)",
+                self._channel, direction, 100 - target, timeout_s,
+            )
             await self.coordinator.api.send_motor_command(self._channel, command)
             await self.coordinator.async_refresh()
 
@@ -416,12 +434,17 @@ class BleBoxMotorCover(CoordinatorEntity[BleBoxCoordinator], CoverEntity):
                     else position >= target - POSITION_TOLERANCE
                 )
                 if reached:
+                    _LOGGER.debug(
+                        "Motor %s: reached HA position %s (target=%s); stopping",
+                        self._channel, 100 - position, 100 - target,
+                    )
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
                     await asyncio.sleep(EXTRA_STOP_DELAY_SEC)
                     await self.coordinator.api.send_motor_command(self._channel, CMD_STOP)
                     await self.coordinator.async_refresh()
                     return
         except (BleBoxApiError, HomeAssistantError) as err:
+            _LOGGER.debug("Motor %s: position controller failed: %s", self._channel, err)
             async with self._command_lock:
                 if self._position_task is asyncio.current_task():
                     if isinstance(err, BleBoxApiError):

@@ -100,6 +100,23 @@ started outside Apple Home, causing iOS to display the opposite direction even
 when Home Assistant reports the correct direction. The bridge correction is in
 Home Assistant; updating this custom integration alone does not fix that issue.
 
+If a movement stops early from Apple Home, enable both loggers temporarily in
+Home Assistant **Developer Tools → Actions**:
+
+```yaml
+action: logger.set_level
+data:
+  custom_components.blebox_smartwindowbox: debug
+  homeassistant.components.homekit: debug
+```
+
+Reproduce one movement and inspect the logs for the requested Home Assistant
+position, native command, and stop reason (target reached, cancellation,
+timeout, or connection failure). Include the HomeKit lines immediately before
+the stop when reporting the issue. Debug logging does not change motor behavior.
+After collecting the logs, run the same action with both levels set to `warning`
+or restart Home Assistant to restore the configured logging levels.
+
 ---
 
 ### Rain Sensor
